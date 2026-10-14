@@ -191,8 +191,9 @@ window.__ModuleLoader__.load({
         /* A backup owned by this very Session is never injected back: the read
          * is the Session's own truth, and the write path already spent it. */
         if (!backup || backup.key === key) return raw;
-        if (draftTextOf(backup.raw).trim() === '') return raw;
-        publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview });
+        const text = draftTextOf(backup.raw);
+        if (text.trim() === '') return raw;
+        publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text });
         return backup.raw;
       }
 
@@ -261,9 +262,18 @@ window.__ModuleLoader__.load({
       const actions = props.inputActions;
       const t = props.t;
 
-      /* The strip only exists while a restored draft is actually in the
-       * composer: once the user clears or sends it, there is nothing to say. */
-      if (!snapshot || draft === null || draft === '') return null;
+      /* The strip belongs to the very draft it restored, and only lives while
+       * that draft is in the composer: once the user clears or sends it, there
+       * is nothing to say. A session slot carries no Session id (InputState has
+       * none), so the restored text itself is the identity — a different
+       * Session's composer holds a different draft and stays quiet. */
+      const mine =
+        snapshot &&
+        typeof snapshot.text === 'string' &&
+        snapshot.text !== '' &&
+        draft !== null &&
+        (draft === snapshot.text || draft.startsWith(snapshot.text));
+      if (!mine) return null;
 
       const button = {
         appearance: 'none',
