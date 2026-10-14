@@ -68,6 +68,11 @@ class FakeStorage {
 const storage = new FakeStorage();
 globalThis.localStorage = storage;
 
+/* The original writer, so a case can leave a draft behind exactly the way an
+ * earlier run of the plugin would have: the guard is installed later, in
+ * apply(). */
+const writeBehindTheGuard = Object.getPrototypeOf(storage).setItem;
+
 /* ------------------------------------------------------------------ *
  * stub React: the notice component is captured, never rendered         *
  * ------------------------------------------------------------------ */
@@ -276,7 +281,40 @@ check(
 );
 
 /* ------------------------------------------------------------------ *
- * 6. a draft the user typed in a session stays that session's own      *
+ * 6. a draft left behind by an earlier plugin version is adopted       *
+ * ------------------------------------------------------------------ */
+
+console.log('\nlegacy borrows from an earlier version');
+storage.clear();
+
+/* An earlier run handed this session a draft and stored it there, without
+ * recording that it was only a loan. */
+writeBehindTheGuard.call(storage, key('legacy-B'), stateWith('测试会话'));
+/* The backup carried that version too, then moved on in a new session. */
+storage.setItem(key('legacy-A'), stateWith('测试会话'));
+storage.setItem(key('legacy-X'), stateWith('测试会话第二次'));
+check('the newest version is the backup', JSON.parse(backup().raw).draft.text, '测试会话第二次');
+check('the earlier version is remembered', backup().history.includes('测试会话'), true);
+
+/* The legacy session must now follow the newest text. */
+check(
+  'a legacy handed-out draft follows the newest text',
+  JSON.parse(storage.getItem(key('legacy-B'))).draft.text,
+  '测试会话第二次',
+);
+
+/* Text the user typed is on record as that session's own, so it is never
+ * adopted. */
+storage.setItem(key('legacy-C'), stateWith('我自己写的'));
+storage.setItem(key('legacy-D'), stateWith('别处又改了'));
+check(
+  'a session the user typed into is never replaced',
+  JSON.parse(storage.getItem(key('legacy-C'))).draft.text,
+  '我自己写的',
+);
+
+/* ------------------------------------------------------------------ *
+ * 7. a draft the user typed in a session stays that session's own      *
  * ------------------------------------------------------------------ */
 
 console.log('\nprotected own drafts');
@@ -297,7 +335,7 @@ check(
 );
 
 /* ------------------------------------------------------------------ *
- * 7. legacy string drafts, and empty writes                           *
+ * 8. legacy string drafts, and empty writes                           *
  * ------------------------------------------------------------------ */
 
 console.log('\nedge cases');
@@ -315,7 +353,7 @@ storage.setItem(key('session-G'), 'not json at all');
 check('garbage written to a draft key is ignored', backup().key, key('session-D'));
 
 /* ------------------------------------------------------------------ *
- * 8. disposal restores the original storage methods                   *
+ * 9. disposal restores the original storage methods                   *
  * ------------------------------------------------------------------ */
 
 console.log('\ndisposal');

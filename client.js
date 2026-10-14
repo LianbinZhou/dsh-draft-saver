@@ -60,6 +60,8 @@ window.__ModuleLoader__.load({
     const BACKUP_KEY = 'dsh-draft-saver.backup.v1';
     /** Sessions whose composer is showing a borrowed draft rather than their own. */
     const BORROWED_KEY = 'dsh-draft-saver.borrowed.v1';
+    /** Sessions the user actually typed a draft in; their text is never replaced. */
+    const OWNED_KEY = 'dsh-draft-saver.owned.v1';
     /** Composer floating layer: a closed entry there is the normal state. */
     const NOTICE_SLOT = 'conversation.input.overlay';
     const NOTICE_ID = 'draft-saver.notice';
@@ -206,6 +208,37 @@ window.__ModuleLoader__.load({
         if (list.includes(key)) borrowedWrite(list.filter((item) => item !== key));
       }
 
+      /* Sessions the user actually typed in: their draft is theirs, so the
+       * history adoption below never touches them. */
+      function ownedRead() {
+        try {
+          const raw = origGet.call(localStorage, OWNED_KEY);
+          if (raw === null) return [];
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+        } catch (err) {
+          return [];
+        }
+      }
+
+      function ownedWrite(list) {
+        try {
+          origSet.call(localStorage, OWNED_KEY, JSON.stringify(list.slice(-200)));
+        } catch (err) {
+          /* ignore */
+        }
+      }
+
+      function claimOwned(key) {
+        const list = ownedRead();
+        if (!list.includes(key)) ownedWrite(list.concat([key]));
+      }
+
+      function releaseOwned(key) {
+        const list = ownedRead();
+        if (list.includes(key)) ownedWrite(list.filter((item) => item !== key));
+      }
+
       /** Mirror a draft write; an emptied owner Session spends the backup. */
       function onWrite(key, value) {
         const seen = lastRead.get(key);
@@ -223,9 +256,20 @@ window.__ModuleLoader__.load({
             return;
           }
           /* Text the user actually typed here: this Session owns its draft from
-           * now on, so it stops following the backup. */
+           * now on, so it stops following the backup and is never adopted as a
+           * borrower by the history rule below. */
           release(key);
+          claimOwned(key);
           if (existing && existing.key === key && existing.raw === value) return;
+          /* Remember the versions this backup has carried. A session still
+           * holding one of them is holding a draft we handed out — see the read
+           * path, which adopts such a session as a borrower. */
+          const history = [];
+          if (existing) {
+            const previous = draftTextOf(existing.raw);
+            if (previous.trim() !== '') history.push(previous);
+            if (Array.isArray(existing.history)) history.push(...existing.history);
+          }
           backupWrite({
             v: 1,
             at: Date.now(),
@@ -233,10 +277,13 @@ window.__ModuleLoader__.load({
             raw: value,
             chars: text.length,
             preview: previewOf(text),
+            history: history.filter((item, index) => history.indexOf(item) === index && item !== text).slice(0, 10),
           });
           return;
         }
+        /* Emptied: neither a borrower nor an owner any more. */
         release(key);
+        releaseOwned(key);
         if (existing && existing.key === key) backupDrop();
       }
 
@@ -244,9 +291,20 @@ window.__ModuleLoader__.load({
       function decideRead(key, raw) {
         const backup = backupRead();
         const own = raw !== null && draftTextOf(raw).trim() !== '';
+        let borrowed = borrowedRead();
+        /* A draft this Session holds that we know we once handed out is a debt
+         * from an earlier run of the plugin, which had no borrower list: adopt
+         * it, so it follows the newest text from now on. Text the user typed
+         * never entered that history, so a Session's own draft stays its own. */
+        if (own && !borrowed.includes(key) && !ownedRead().includes(key) && backup && Array.isArray(backup.history)) {
+          if (backup.history.includes(draftTextOf(raw))) {
+            borrow(key);
+            borrowed = borrowed.concat([key]);
+          }
+        }
         /* A Session that only ever borrowed its draft keeps following the newest
          * one, even though an earlier borrow left a copy in its own key. */
-        if (backup && backup.key !== key && borrowedRead().includes(key)) {
+        if (backup && backup.key !== key && borrowed.includes(key)) {
           const borrowedText = draftTextOf(backup.raw);
           if (borrowedText.trim() !== '') {
             publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text: borrowedText });
