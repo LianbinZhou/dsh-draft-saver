@@ -1,0 +1,5 @@
+{
+  "meta": {
+    "description": "Draft saver: mirrors unsent composer text and hands it back in a new session, where you decide to send or clear it"
+  }
+}

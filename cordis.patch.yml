@@ -1,0 +1,10 @@
+# dsh-draft-saver bundle patch: inserts one plugin row into the plugin roster.
+#
+# The row mounts both halves of the package:
+#   - host half  (index.js)  : empty; the feature is browser presentation only.
+#   - browser half (client.js): a localStorage guard around the Harness
+#     conversation draft keys, plus a notice strip in
+#     `conversation.input.overlay` that reports a restored draft.
+- insert:
+    - id: draft-saver
+      name: 'dsh-draft-saver'

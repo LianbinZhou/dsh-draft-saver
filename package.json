@@ -1,0 +1,44 @@
+{
+  "name": "dsh-draft-saver",
+  "version": "0.1.0",
+  "description": "Never lose an unsent composer draft: the browser half mirrors every non-empty draft into a global backup and hands it back when a brand-new session's composer would otherwise open empty",
+  "type": "module",
+  "license": "MIT",
+  "author": "Lianbin Zhou",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "draft",
+    "composer"
+  ],
+  "scripts": {
+    "test": "node test/draft.test.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "locale/*.json"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
