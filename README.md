@@ -122,3 +122,7 @@ node test/draft.test.mjs
 ## License
 
 MIT © 2026 Lianbin Zhou
+
+---
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
