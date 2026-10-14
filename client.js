@@ -179,7 +179,6 @@ window.__ModuleLoader__.load({
 
       const origGet = proto.getItem;
       const origSet = proto.setItem;
-      const origRemove = proto.removeItem;
 
       /* Backup IO always targets localStorage through the ORIGINAL methods:
        * going through the patched pair here would recurse. */
@@ -204,19 +203,14 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function backupDrop() {
-        try {
-          if (typeof origRemove === 'function') origRemove.call(localStorage, BACKUP_KEY);
-        } catch (err) {
-          /* ignore */
-        }
-      }
-
       /* Last value handed to the Harness for each draft key. A session that
        * reads its stored draft and writes the very same value back is
        * rehydrating, not typing — and that write must never overwrite a newer
        * backup with an older draft. */
       const lastRead = new Map();
+
+      /** A stored draft value that means "the shared draft is empty". */
+      const EMPTY_DRAFT = JSON.stringify({ draft: { text: '', references: [] }, view: null, viewRequest: null });
 
       /** Mirror a draft write: it becomes the newest draft for every composer. */
       function onWrite(key, value) {
@@ -236,12 +230,13 @@ window.__ModuleLoader__.load({
           backupWrite({ v: 1, at: Date.now(), key, raw: value, chars: text.length, preview: previewOf(text) });
           return;
         }
-        /* An empty draft — the send that consumed it, or the user clearing it.
-         * Clearing is a deliberate act on ONE composer, so emptiness is never
-         * pushed anywhere: the other composers keep whatever they hold. The
-         * shared draft simply stops existing, because the user is done with it.
-         * Whitespace-only text and unreadable values are not "empty". */
-        if (text === '' && existing) backupDrop();
+        /* Empty: the draft was sent, or cleared with the strip's button. Being
+         * done with it is exactly why emptiness travels too — every other
+         * composer follows the shared draft to empty. Whitespace-only text and
+         * unreadable values are not that. */
+        if (text === '') {
+          backupWrite({ v: 1, at: Date.now(), key, raw: EMPTY_DRAFT, chars: 0, preview: '' });
+        }
       }
 
       /** Answer every draft read with the one newest unsent draft. */
@@ -251,7 +246,10 @@ window.__ModuleLoader__.load({
         const newest = draftTextOf(backup.raw);
         const own = raw === null ? '' : draftTextOf(raw);
         if (own === newest) return raw;
-        if (newest.trim() === '') return raw;
+        if (newest.trim() === '') {
+          /* The shared draft is empty: follow it to empty, silently. */
+          return own.trim() === '' ? raw : backup.raw;
+        }
         publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text: newest });
         return backup.raw;
       }

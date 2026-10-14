@@ -242,30 +242,30 @@ check('a later edit becomes the newest draft', newest(), '第二版');
 check('and the earlier composer follows it', readText(storage.getItem(key('r2'))), '第二版');
 
 /* ------------------------------------------------------------------ *
- * 5. clearing stays inside the composer it was clicked in             *
+ * 5. clearing follows everywhere                                      *
  * ------------------------------------------------------------------ */
 
-console.log('\nclearing stays local');
+console.log('\nclearing follows everywhere');
 storage.clear();
 storage.setItem(key('c-A'), stateWith('A 自己的内容'));
 storage.setItem(key('c-B'), stateWith('最新的内容'));
 check('the newest draft is the second one', newest(), '最新的内容');
 
-/* The user clears A, which is not where the newest draft lives. */
+/* The user clears ONE composer; the shared draft is empty from then on. */
 storage.setItem(key('c-A'), emptyState);
-check('clearing drops the shared draft', backup(), null);
-check('the other composer keeps its text', readText(storage.getItem(key('c-B'))), '最新的内容');
-check('an empty composer stays empty', storage.getItem(key('c-C')), null);
+check('clearing makes the shared draft empty', newest(), '');
+check('another composer follows it to empty', readText(storage.getItem(key('c-B'))), '');
+check('a composer that never held one stays empty', readText(storage.getItem(key('c-C'))), '');
 
-/* Typing again starts a fresh shared draft. */
+/* Typing anywhere starts a fresh shared draft. */
 storage.setItem(key('c-D'), stateWith('清空后重新写的'));
 check('typing again starts a new shared draft', newest(), '清空后重新写的');
+check('and the emptied composer gets it', readText(storage.getItem(key('c-B'))), '清空后重新写的');
 
-/* Clearing the composer that owns the newest draft drops it the same way, and
- * still does not touch anyone else. */
+/* Sending empties the composer too, and travels the same way. */
 storage.setItem(key('c-D'), emptyState);
-check('clearing the newest draft drops it too', backup(), null);
-check('and the untouched composer still holds its own text', readText(storage.getItem(key('c-B'))), '最新的内容');
+check('sending empties the shared draft', newest(), '');
+check('and every composer follows', readText(storage.getItem(key('c-B'))), '');
 
 /* ------------------------------------------------------------------ *
  * 6. edge cases                                                       *
