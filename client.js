@@ -58,6 +58,8 @@ window.__ModuleLoader__.load({
     const DRAFT_PREFIX = 'dsh.conversation.';
     /** One global backup slot; it holds the newest unsent draft, not a history. */
     const BACKUP_KEY = 'dsh-draft-saver.backup.v1';
+    /** Sessions whose composer is showing a borrowed draft rather than their own. */
+    const BORROWED_KEY = 'dsh-draft-saver.borrowed.v1';
     /** Composer floating layer: a closed entry there is the normal state. */
     const NOTICE_SLOT = 'conversation.input.overlay';
     const NOTICE_ID = 'draft-saver.notice';
@@ -171,6 +173,39 @@ window.__ModuleLoader__.load({
        * backup with an older draft. */
       const lastRead = new Map();
 
+      /* Sessions whose composer is only showing a draft they borrowed from the
+       * backup. They keep following the newest unsent text until the user
+       * types something of their own there; a draft the user typed in a Session
+       * is that Session's own and is never overwritten by another Session. */
+      function borrowedRead() {
+        try {
+          const raw = origGet.call(localStorage, BORROWED_KEY);
+          if (raw === null) return [];
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
+        } catch (err) {
+          return [];
+        }
+      }
+
+      function borrowedWrite(list) {
+        try {
+          origSet.call(localStorage, BORROWED_KEY, JSON.stringify(list.slice(-200)));
+        } catch (err) {
+          /* ignore */
+        }
+      }
+
+      function borrow(key) {
+        const list = borrowedRead();
+        if (!list.includes(key)) borrowedWrite(list.concat([key]));
+      }
+
+      function release(key) {
+        const list = borrowedRead();
+        if (list.includes(key)) borrowedWrite(list.filter((item) => item !== key));
+      }
+
       /** Mirror a draft write; an emptied owner Session spends the backup. */
       function onWrite(key, value) {
         const seen = lastRead.get(key);
@@ -187,6 +222,9 @@ window.__ModuleLoader__.load({
             if (existing && existing.key !== key) backupWrite(Object.assign({}, existing, { key }));
             return;
           }
+          /* Text the user actually typed here: this Session owns its draft from
+           * now on, so it stops following the backup. */
+          release(key);
           if (existing && existing.key === key && existing.raw === value) return;
           backupWrite({
             v: 1,
@@ -198,18 +236,30 @@ window.__ModuleLoader__.load({
           });
           return;
         }
+        release(key);
         if (existing && existing.key === key) backupDrop();
       }
 
-      /** Answer a draft read that has nothing of its own with the backup. */
+      /** Answer a draft read with the newest unsent text. */
       function decideRead(key, raw) {
-        if (raw !== null && draftTextOf(raw).trim() !== '') return raw;
         const backup = backupRead();
-        /* A backup owned by this very Session is never injected back: the read
-         * is the Session's own truth, and the write path already spent it. */
+        const own = raw !== null && draftTextOf(raw).trim() !== '';
+        /* A Session that only ever borrowed its draft keeps following the newest
+         * one, even though an earlier borrow left a copy in its own key. */
+        if (backup && backup.key !== key && borrowedRead().includes(key)) {
+          const borrowedText = draftTextOf(backup.raw);
+          if (borrowedText.trim() !== '') {
+            publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text: borrowedText });
+            return backup.raw;
+          }
+        }
+        if (own) return raw;
+        /* Nothing of its own: hand it the backup, and remember that it is only
+         * borrowing, so later edits keep reaching it too. */
         if (!backup || backup.key === key) return raw;
         const text = draftTextOf(backup.raw);
         if (text.trim() === '') return raw;
+        borrow(key);
         publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text });
         return backup.raw;
       }

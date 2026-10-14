@@ -208,13 +208,17 @@ check(
   '测试会话框测试新会话框第一次',
 );
 
-/* Open the older session AGAIN. It still holds the short draft and writes it
- * back unchanged: a rehydration, not an edit. */
+/* Open the older session AGAIN. It borrowed its draft, so it now follows the
+ * newest text — and the store writes that text straight back, unchanged. */
 const rehydratedB = storage.getItem(key('session-B'));
-check('the older session reads its own stored draft', rehydratedB, stateWith('测试会话框'));
+check(
+  'the borrowed older session follows the newest draft',
+  JSON.parse(rehydratedB).draft.text,
+  '测试会话框测试新会话框第一次',
+);
 storage.setItem(key('session-B'), rehydratedB);
 check(
-  'rehydrating the older draft does NOT overwrite the newer one',
+  'writing the borrowed draft back does NOT overwrite the newer one',
   JSON.parse(backup().raw).draft.text,
   '测试会话框测试新会话框第一次',
 );
@@ -228,7 +232,72 @@ check(
 );
 
 /* ------------------------------------------------------------------ *
- * 5. legacy string drafts, and empty writes                           *
+ * 5. a borrowed draft follows every later edit (the second report)     *
+ * ------------------------------------------------------------------ */
+
+console.log('\nborrowed drafts follow the newest text');
+storage.clear();
+
+/* Type in a new session, then look at an older one: it borrows the draft. */
+storage.setItem(key('league-A'), stateWith('测试会话'));
+const borrowedB = storage.getItem(key('league-B'));
+check('the older session borrows the draft', JSON.parse(borrowedB).draft.text, '测试会话');
+storage.setItem(key('league-B'), borrowedB);
+
+/* A new session shows it, and the user extends it there. */
+const newC = storage.getItem(key('league-C'));
+storage.setItem(key('league-C'), newC);
+storage.setItem(key('league-C'), stateWith('测试会话测试会话第一次'));
+check(
+  'the extension becomes the newest draft',
+  JSON.parse(backup().raw).draft.text,
+  '测试会话测试会话第一次',
+);
+
+/* Looking at the older session again must show the extension, not the copy it
+ * borrowed the first time. */
+const secondLookB = storage.getItem(key('league-B'));
+check(
+  'the older session now shows the extension',
+  JSON.parse(secondLookB).draft.text,
+  '测试会话测试会话第一次',
+);
+storage.setItem(key('league-B'), secondLookB);
+
+/* One more round: another new session extends it again. */
+const newD = storage.getItem(key('league-D'));
+storage.setItem(key('league-D'), newD);
+storage.setItem(key('league-D'), stateWith('测试会话测试会话第一次测试会话第二次'));
+const thirdLookB = storage.getItem(key('league-B'));
+check(
+  'and it still follows after a second extension',
+  JSON.parse(thirdLookB).draft.text,
+  '测试会话测试会话第一次测试会话第二次',
+);
+
+/* ------------------------------------------------------------------ *
+ * 6. a draft the user typed in a session stays that session's own      *
+ * ------------------------------------------------------------------ */
+
+console.log('\nprotected own drafts');
+storage.clear();
+storage.setItem(key('mine-X'), stateWith('我自己写的草稿'));
+check(
+  'a session keeps the draft typed in it',
+  JSON.parse(storage.getItem(key('mine-X'))).draft.text,
+  '我自己写的草稿',
+);
+/* Another session's edit updates the backup... */
+storage.setItem(key('mine-Y'), stateWith('别处更新的内容'));
+/* ...and must never reach into a session that owns the text it holds. */
+check(
+  'another session never overwrites it',
+  JSON.parse(storage.getItem(key('mine-X'))).draft.text,
+  '我自己写的草稿',
+);
+
+/* ------------------------------------------------------------------ *
+ * 7. legacy string drafts, and empty writes                           *
  * ------------------------------------------------------------------ */
 
 console.log('\nedge cases');
@@ -246,7 +315,7 @@ storage.setItem(key('session-G'), 'not json at all');
 check('garbage written to a draft key is ignored', backup().key, key('session-D'));
 
 /* ------------------------------------------------------------------ *
- * 6. disposal restores the original storage methods                   *
+ * 8. disposal restores the original storage methods                   *
  * ------------------------------------------------------------------ */
 
 console.log('\ndisposal');
