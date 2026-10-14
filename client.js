@@ -65,12 +65,18 @@ window.__ModuleLoader__.load({
 
     const ZH = {
       notice: '已恢复上次未发送的草稿（{chars} 字）',
+      copy: '复制',
+      copied: '已复制',
+      copyFailed: '复制失败',
       clear: '清空',
       dismiss: '知道了',
       hint: '来自上一个会话、还没发送的内容；你可以直接改、发出去，或点清空丢掉它。',
     };
     const EN = {
       notice: 'Restored an unsent draft ({chars} chars)',
+      copy: 'Copy',
+      copied: 'Copied',
+      copyFailed: 'Copy failed',
       clear: 'Clear',
       dismiss: 'Got it',
       hint: 'Text from an earlier session that was never sent; edit it, send it, or clear it away.',
@@ -106,6 +112,37 @@ window.__ModuleLoader__.load({
     function previewOf(text) {
       const flat = String(text).replace(/\s+/g, ' ').trim();
       return flat.length > 60 ? flat.slice(0, 60) + '…' : flat;
+    }
+
+    /**
+     * Put text on the clipboard. The async Clipboard API needs a secure context
+     * and a user gesture; the hidden-textarea fallback covers what it refuses.
+     * Resolves to whether the copy landed, so the strip can say so.
+     */
+    async function copyText(text) {
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch (err) {
+        /* fall through to the legacy path */
+      }
+      try {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.setAttribute('readonly', '');
+        area.style.position = 'fixed';
+        area.style.top = '0';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        const done = document.execCommand('copy');
+        document.body.removeChild(area);
+        return done === true;
+      } catch (err) {
+        return false;
+      }
     }
 
     /* ------------------------------------------------------------------ *
@@ -267,6 +304,8 @@ window.__ModuleLoader__.load({
 
     function DraftSaverNotice(props) {
       const [snapshot, setSnapshot] = useState(notice);
+      /** '' | 'copied' | 'failed' — shown on the copy button for a moment. */
+      const [copied, setCopied] = useState('');
 
       useEffect(() => {
         const sync = () => setSnapshot(notice);
@@ -278,11 +317,12 @@ window.__ModuleLoader__.load({
       }, []);
 
       /* The strip is informational: it retires on its own so it never sits on
-       * top of the composer while the user works on the restored text. The
-       * draft itself stays in the composer either way. */
+       * top of the composer while the user works on the restored text. Acting on
+       * it republishes the notice, which restarts this timer. The draft itself
+       * stays in the composer either way. */
       useEffect(() => {
         if (!snapshot) return undefined;
-        const timer = setTimeout(() => publishNotice(null), 10000);
+        const timer = setTimeout(() => publishNotice(null), 20000);
         return () => clearTimeout(timer);
       }, [snapshot]);
 
@@ -346,6 +386,26 @@ window.__ModuleLoader__.load({
             'span',
             { key: 'text', title: snapshot.preview || '', style: { flex: '1 1 auto', minWidth: '0' } },
             t('notice', { chars: snapshot.chars }),
+          ),
+          h(
+            'button',
+            {
+              key: 'copy',
+              type: 'button',
+              style: button,
+              title: t('hint'),
+              onClick: () => {
+                /* Copy what the composer holds right now, not the text the
+                 * strip was raised with. */
+                copyText(draft).then((done) => {
+                  setCopied(done ? 'copied' : 'failed');
+                  /* Republishing restarts the strip's own retirement timer. */
+                  publishNotice(Object.assign({}, snapshot));
+                  setTimeout(() => setCopied(''), 1800);
+                });
+              },
+            },
+            copied === 'copied' ? t('copied') : copied === 'failed' ? t('copyFailed') : t('copy'),
           ),
           h(
             'button',
