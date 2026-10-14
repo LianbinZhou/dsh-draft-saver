@@ -58,6 +58,23 @@ error: profile "desktop" is managed exclusively by the Electron application
 
 只能在**桌面版应用内的会话**里让 AI 用 `plugin_manager` 装（同样是上面那句），装完刷新界面。
 
+### 另一台机器（Linux / macOS）从 GitHub 装
+
+先把仓库拉下来：
+
+```bash
+git clone https://github.com/LianbinZhou/dsh-draft-saver.git
+```
+
+然后**在那个 profile 的会话里**把路径告诉 AI：
+
+> 把 /你放它的路径/dsh-draft-saver 装到当前 profile
+
+（该 profile 允许命令行的话，也可以直接：`dsh plugin --profile <profile名> add /你放它的路径/dsh-draft-saver`。
+注意 `desktop` 这个 profile 例外——它只能由桌面版应用自己管理。）
+
+⚠️ 装完**刷新浏览器页面**（Ctrl+F5 / Cmd+Shift+R）才生效——插件的实现全在浏览器那一半。
+
 ## 怎么验证它真的在工作
 
 1. 随便开一个新会话，输入框里打几个字（**别发**）；
