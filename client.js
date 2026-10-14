@@ -165,11 +165,28 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** Mirror a draft write; an emptied source Session spends the backup. */
+      /* Last value handed to the Harness for each draft key. A session that
+       * reads its stored draft and writes the very same value back is
+       * rehydrating, not typing — and that write must never overwrite a newer
+       * backup with an older draft. */
+      const lastRead = new Map();
+
+      /** Mirror a draft write; an emptied owner Session spends the backup. */
       function onWrite(key, value) {
+        const seen = lastRead.get(key);
         const text = draftTextOf(value);
         const existing = backupRead();
         if (text.trim() !== '') {
+          /* The value this Session was handed, written back unchanged: a
+           * rehydration, not an edit. It must not overwrite a newer draft, but
+           * it does make this Session the owner, so that sending or clearing
+           * the text THERE is what spends the backup. Comparing draft text
+           * rather than the whole stored JSON keeps this working when the store
+           * re-serializes a value it has just parsed. */
+          if (typeof seen === 'string' && draftTextOf(seen) === text) {
+            if (existing && existing.key !== key) backupWrite(Object.assign({}, existing, { key }));
+            return;
+          }
           if (existing && existing.key === key && existing.raw === value) return;
           backupWrite({
             v: 1,
@@ -185,7 +202,7 @@ window.__ModuleLoader__.load({
       }
 
       /** Answer a draft read that has nothing of its own with the backup. */
-      function onRead(key, raw) {
+      function decideRead(key, raw) {
         if (raw !== null && draftTextOf(raw).trim() !== '') return raw;
         const backup = backupRead();
         /* A backup owned by this very Session is never injected back: the read
@@ -195,6 +212,15 @@ window.__ModuleLoader__.load({
         if (text.trim() === '') return raw;
         publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text });
         return backup.raw;
+      }
+
+      /** Read, remember what was answered, and let the write path tell a
+       * rehydration apart from an edit. */
+      function onRead(key, raw) {
+        const answer = decideRead(key, raw);
+        if (lastRead.size > 512) lastRead.clear();
+        lastRead.set(key, answer);
+        return answer;
       }
 
       proto.setItem = function patchedSetItem(key, value) {

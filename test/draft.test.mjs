@@ -173,7 +173,62 @@ check('sending or clearing it drops the backup', backup(), null);
 check('and nothing is injected afterwards', storage.getItem(key('session-C')), null);
 
 /* ------------------------------------------------------------------ *
- * 4. legacy string drafts, and empty writes                           *
+ * 4. rehydration must not clobber a newer backup (the reported bug)    *
+ * ------------------------------------------------------------------ */
+
+console.log('\nrehydration vs a real edit');
+storage.clear();
+
+/* Type into a brand-new session, then leave it. */
+storage.setItem(key('session-A'), stateWith('测试会话框'));
+check(
+  'the first draft becomes the backup',
+  JSON.parse(backup().raw).draft.text,
+  '测试会话框',
+);
+
+/* Open an older session: it has no draft of its own, so it is handed the
+ * backup — and its store writes that very value straight back. */
+const handedToB = storage.getItem(key('session-B'));
+check('an older session is handed the backup', handedToB, stateWith('测试会话框'));
+storage.setItem(key('session-B'), handedToB);
+check(
+  'rehydration alone leaves the backup text alone',
+  JSON.parse(backup().raw).draft.text,
+  '测试会话框',
+);
+check('and the backup now belongs to the session holding it', backup().key, key('session-B'));
+
+/* Keep typing in another new session. */
+const handedToC = storage.getItem(key('session-C'));
+storage.setItem(key('session-C'), stateWith('测试会话框测试新会话框第一次'));
+check(
+  'the extended draft takes over the backup',
+  JSON.parse(backup().raw).draft.text,
+  '测试会话框测试新会话框第一次',
+);
+
+/* Open the older session AGAIN. It still holds the short draft and writes it
+ * back unchanged: a rehydration, not an edit. */
+const rehydratedB = storage.getItem(key('session-B'));
+check('the older session reads its own stored draft', rehydratedB, stateWith('测试会话框'));
+storage.setItem(key('session-B'), rehydratedB);
+check(
+  'rehydrating the older draft does NOT overwrite the newer one',
+  JSON.parse(backup().raw).draft.text,
+  '测试会话框测试新会话框第一次',
+);
+
+/* The next new session must inherit the newest draft. */
+const handedToD = storage.getItem(key('session-D'));
+check(
+  'a later new session inherits the NEWEST draft',
+  JSON.parse(handedToD).draft.text,
+  '测试会话框测试新会话框第一次',
+);
+
+/* ------------------------------------------------------------------ *
+ * 5. legacy string drafts, and empty writes                           *
  * ------------------------------------------------------------------ */
 
 console.log('\nedge cases');
@@ -191,7 +246,7 @@ storage.setItem(key('session-G'), 'not json at all');
 check('garbage written to a draft key is ignored', backup().key, key('session-D'));
 
 /* ------------------------------------------------------------------ *
- * 5. disposal restores the original storage methods                   *
+ * 6. disposal restores the original storage methods                   *
  * ------------------------------------------------------------------ */
 
 console.log('\ndisposal');
