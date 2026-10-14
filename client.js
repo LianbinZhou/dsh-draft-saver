@@ -14,19 +14,20 @@
  *
  * What this plugin does
  * ---------------------
- * Two guarded operations around the draft keys, and nothing else:
+ * One draft, not one per Session. Two guarded operations around the draft keys:
  *
- *  1. Every non-empty draft write is mirrored into one global backup key
- *     (`dsh-draft-saver.backup.v1`). A write that *empties* the very Session the
- *     backup came from means the user sent or deleted it, so the backup is spent
- *     and dropped.
+ *  1. Every draft write is mirrored into one global backup key
+ *     (`dsh-draft-saver.backup.v1`), which is therefore the newest unsent text.
+ *     A Session rehydrating the copy it still held writes back the value it was
+ *     handed, which is recognised and leaves the backup alone. Emptying the
+ *     draft where it lived makes "empty" the newest draft.
  *
- *  2. A draft read that would answer "no draft" — a Session whose key is absent
- *     or already empty — returns the backup instead, when the backup came from a
- *     *different* Session. The Harness then imports it through its own ordinary
- *     rehydration path, so the draft reappears in the composer the same way a
- *     saved draft always does. Nothing here touches the editor, which keeps the
- *     IME and reference-chip behaviour of the official path.
+ *  2. Every draft read answers with that newest draft, so whichever Session you
+ *     open shows the last thing you typed, in full. The Harness then imports it
+ *     through its own ordinary rehydration path, so the text reappears in the
+ *     composer the same way a saved draft always does. Nothing here touches the
+ *     editor, which keeps the IME and reference-chip behaviour of the official
+ *     path.
  *
  * A notice strip in `conversation.input.overlay` reports a restoration and
  * offers to drop the recovered text, so the user always decides its fate.
@@ -58,10 +59,6 @@ window.__ModuleLoader__.load({
     const DRAFT_PREFIX = 'dsh.conversation.';
     /** One global backup slot; it holds the newest unsent draft, not a history. */
     const BACKUP_KEY = 'dsh-draft-saver.backup.v1';
-    /** Sessions whose composer is showing a borrowed draft rather than their own. */
-    const BORROWED_KEY = 'dsh-draft-saver.borrowed.v1';
-    /** Sessions the user actually typed a draft in; their text is never replaced. */
-    const OWNED_KEY = 'dsh-draft-saver.owned.v1';
     /** Composer floating layer: a closed entry there is the normal state. */
     const NOTICE_SLOT = 'conversation.input.overlay';
     const NOTICE_ID = 'draft-saver.notice';
@@ -83,17 +80,26 @@ window.__ModuleLoader__.load({
      * pure helpers                                                        *
      * ------------------------------------------------------------------ */
 
-    /** Plain text of a persisted draft value: a string, or a semantic snapshot. */
-    function draftTextOf(raw) {
+    /**
+     * Decode a persisted draft value: a plain string, or a semantic snapshot.
+     * `ok` separates "this really is an empty draft" from "this value is not a
+     * draft at all", which the write path must treat differently.
+     */
+    function readDraft(raw) {
       try {
         const state = JSON.parse(String(raw));
         const draft = state && typeof state === 'object' ? state.draft : undefined;
-        if (typeof draft === 'string') return draft;
-        if (draft && typeof draft === 'object' && typeof draft.text === 'string') return draft.text;
-        return '';
+        if (typeof draft === 'string') return { ok: true, text: draft };
+        if (draft && typeof draft === 'object' && typeof draft.text === 'string') return { ok: true, text: draft.text };
+        return { ok: false, text: '' };
       } catch (err) {
-        return '';
+        return { ok: false, text: '' };
       }
+    }
+
+    /** Plain text of a persisted draft value; '' when it is not a draft. */
+    function draftTextOf(raw) {
+      return readDraft(raw).text;
     }
 
     /** Single-line head of a draft, for the notice tooltip. */
@@ -175,150 +181,41 @@ window.__ModuleLoader__.load({
        * backup with an older draft. */
       const lastRead = new Map();
 
-      /* Sessions whose composer is only showing a draft they borrowed from the
-       * backup. They keep following the newest unsent text until the user
-       * types something of their own there; a draft the user typed in a Session
-       * is that Session's own and is never overwritten by another Session. */
-      function borrowedRead() {
-        try {
-          const raw = origGet.call(localStorage, BORROWED_KEY);
-          if (raw === null) return [];
-          const parsed = JSON.parse(raw);
-          return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
-        } catch (err) {
-          return [];
-        }
-      }
-
-      function borrowedWrite(list) {
-        try {
-          origSet.call(localStorage, BORROWED_KEY, JSON.stringify(list.slice(-200)));
-        } catch (err) {
-          /* ignore */
-        }
-      }
-
-      function borrow(key) {
-        const list = borrowedRead();
-        if (!list.includes(key)) borrowedWrite(list.concat([key]));
-      }
-
-      function release(key) {
-        const list = borrowedRead();
-        if (list.includes(key)) borrowedWrite(list.filter((item) => item !== key));
-      }
-
-      /* Sessions the user actually typed in: their draft is theirs, so the
-       * history adoption below never touches them. */
-      function ownedRead() {
-        try {
-          const raw = origGet.call(localStorage, OWNED_KEY);
-          if (raw === null) return [];
-          const parsed = JSON.parse(raw);
-          return Array.isArray(parsed) ? parsed.filter((item) => typeof item === 'string') : [];
-        } catch (err) {
-          return [];
-        }
-      }
-
-      function ownedWrite(list) {
-        try {
-          origSet.call(localStorage, OWNED_KEY, JSON.stringify(list.slice(-200)));
-        } catch (err) {
-          /* ignore */
-        }
-      }
-
-      function claimOwned(key) {
-        const list = ownedRead();
-        if (!list.includes(key)) ownedWrite(list.concat([key]));
-      }
-
-      function releaseOwned(key) {
-        const list = ownedRead();
-        if (list.includes(key)) ownedWrite(list.filter((item) => item !== key));
-      }
-
-      /** Mirror a draft write; an emptied owner Session spends the backup. */
+      /** Mirror a draft write: it becomes the newest draft for every composer. */
       function onWrite(key, value) {
+        const parsed = readDraft(value);
+        if (!parsed.ok) return;
         const seen = lastRead.get(key);
-        const text = draftTextOf(value);
+        const text = parsed.text;
         const existing = backupRead();
         if (text.trim() !== '') {
-          /* The value this Session was handed, written back unchanged: a
-           * rehydration, not an edit. It must not overwrite a newer draft, but
-           * it does make this Session the owner, so that sending or clearing
-           * the text THERE is what spends the backup. Comparing draft text
-           * rather than the whole stored JSON keeps this working when the store
+          /* The value this Session was handed, written back unchanged: the
+           * composer is rehydrating, not the user typing, so the copy it still
+           * held must not replace a newer draft. Comparing draft text rather
+           * than the whole stored JSON keeps this working when the store
            * re-serializes a value it has just parsed. */
-          if (typeof seen === 'string' && draftTextOf(seen) === text) {
-            if (existing && existing.key !== key) backupWrite(Object.assign({}, existing, { key }));
-            return;
-          }
-          /* Text the user actually typed here: this Session owns its draft from
-           * now on, so it stops following the backup and is never adopted as a
-           * borrower by the history rule below. */
-          release(key);
-          claimOwned(key);
+          if (typeof seen === 'string' && draftTextOf(seen) === text) return;
           if (existing && existing.key === key && existing.raw === value) return;
-          /* Remember the versions this backup has carried. A session still
-           * holding one of them is holding a draft we handed out — see the read
-           * path, which adopts such a session as a borrower. */
-          const history = [];
-          if (existing) {
-            const previous = draftTextOf(existing.raw);
-            if (previous.trim() !== '') history.push(previous);
-            if (Array.isArray(existing.history)) history.push(...existing.history);
-          }
-          backupWrite({
-            v: 1,
-            at: Date.now(),
-            key,
-            raw: value,
-            chars: text.length,
-            preview: previewOf(text),
-            history: history.filter((item, index) => history.indexOf(item) === index && item !== text).slice(0, 10),
-          });
+          backupWrite({ v: 1, at: Date.now(), key, raw: value, chars: text.length, preview: previewOf(text) });
           return;
         }
-        /* Emptied: neither a borrower nor an owner any more. */
-        release(key);
-        releaseOwned(key);
-        if (existing && existing.key === key) backupDrop();
+        /* An empty draft — the send that consumed it, or the user clearing it.
+         * Clearing is a deliberate act on ONE composer, so emptiness is never
+         * pushed anywhere: the other composers keep whatever they hold. The
+         * shared draft simply stops existing, because the user is done with it.
+         * Whitespace-only text and unreadable values are not "empty". */
+        if (text === '' && existing) backupDrop();
       }
 
-      /** Answer a draft read with the newest unsent text. */
+      /** Answer every draft read with the one newest unsent draft. */
       function decideRead(key, raw) {
         const backup = backupRead();
-        const own = raw !== null && draftTextOf(raw).trim() !== '';
-        let borrowed = borrowedRead();
-        /* A draft this Session holds that we know we once handed out is a debt
-         * from an earlier run of the plugin, which had no borrower list: adopt
-         * it, so it follows the newest text from now on. Text the user typed
-         * never entered that history, so a Session's own draft stays its own. */
-        if (own && !borrowed.includes(key) && !ownedRead().includes(key) && backup && Array.isArray(backup.history)) {
-          if (backup.history.includes(draftTextOf(raw))) {
-            borrow(key);
-            borrowed = borrowed.concat([key]);
-          }
-        }
-        /* A Session that only ever borrowed its draft keeps following the newest
-         * one, even though an earlier borrow left a copy in its own key. */
-        if (backup && backup.key !== key && borrowed.includes(key)) {
-          const borrowedText = draftTextOf(backup.raw);
-          if (borrowedText.trim() !== '') {
-            publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text: borrowedText });
-            return backup.raw;
-          }
-        }
-        if (own) return raw;
-        /* Nothing of its own: hand it the backup, and remember that it is only
-         * borrowing, so later edits keep reaching it too. */
-        if (!backup || backup.key === key) return raw;
-        const text = draftTextOf(backup.raw);
-        if (text.trim() === '') return raw;
-        borrow(key);
-        publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text });
+        if (!backup) return raw;
+        const newest = draftTextOf(backup.raw);
+        const own = raw === null ? '' : draftTextOf(raw);
+        if (own === newest) return raw;
+        if (newest.trim() === '') return raw;
+        publishNotice({ at: Date.now(), chars: backup.chars, preview: backup.preview, text: newest });
         return backup.raw;
       }
 

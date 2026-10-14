@@ -69,8 +69,7 @@ const storage = new FakeStorage();
 globalThis.localStorage = storage;
 
 /* The original writer, so a case can leave a draft behind exactly the way an
- * earlier run of the plugin would have: the guard is installed later, in
- * apply(). */
+ * earlier page load would have: the guard is installed later, in apply(). */
 const writeBehindTheGuard = Object.getPrototypeOf(storage).setItem;
 
 /* ------------------------------------------------------------------ *
@@ -106,7 +105,10 @@ plugin.apply({
     if (typeof disposer === 'function') disposers.push(disposer);
     return disposer;
   },
-  locale: { register: () => () => {}, bind: () => (key, params) => key + (params ? ' ' + JSON.stringify(params) : '') },
+  locale: {
+    register: () => () => {},
+    bind: () => (key, params) => key + (params ? ' ' + JSON.stringify(params) : ''),
+  },
   slots: {
     inject: (_slot, fn) => fn(),
     register: (options, Component) => {
@@ -119,7 +121,7 @@ plugin.apply({
 check('registered slots', registered.map((r) => r.options.id), ['draft-saver.notice']);
 
 /* ------------------------------------------------------------------ *
- * helpers mirroring what the conversation store writes                *
+ * helpers mirroring what the conversation store writes and reads       *
  * ------------------------------------------------------------------ */
 
 const BACKUP = 'dsh-draft-saver.backup.v1';
@@ -127,242 +129,179 @@ const key = (id) => 'dsh.conversation.' + id;
 
 /** The conversation store persists the whole state object as JSON. */
 const stateWith = (text) => JSON.stringify({ draft: { text, references: [] }, view: null, viewRequest: null });
+const emptyState = JSON.stringify({ draft: { text: '', references: [] }, view: null, viewRequest: null });
+
+function draftText(raw) {
+  if (raw === null) return null;
+  try {
+    const state = JSON.parse(raw);
+    const draft = state && state.draft;
+    if (typeof draft === 'string') return draft;
+    if (draft && typeof draft.text === 'string') return draft.text;
+    return '';
+  } catch (err) {
+    return '';
+  }
+}
+
+/** Text of a read result; null stays "nothing was stored at all". */
+const readText = (raw) => (raw === null ? '' : draftText(raw));
 
 function backup() {
   const raw = storage.getItem(BACKUP);
   return raw === null ? null : JSON.parse(raw);
 }
 
-/* ------------------------------------------------------------------ *
- * 1. a non-empty draft write is mirrored                              *
- * ------------------------------------------------------------------ */
-
-console.log('\ndraft mirroring');
-storage.setItem(key('session-A'), stateWith('第一段草稿'));
-ok('backup written for the new draft', backup() !== null);
-check('backup remembers its source session', backup().key, key('session-A'));
-check('backup counts characters', backup().chars, 5);
-check('backup keeps the original value verbatim', backup().raw, stateWith('第一段草稿'));
-
-storage.setItem(key('session-A'), stateWith('第一段草稿，又补了几个字'));
-ok('a later edit replaces the backup', backup().chars > 5);
-
-storage.setItem(key('session-A'), JSON.stringify({ draft: '', view: null, viewRequest: null }));
-check('emptying the source session spends the backup', backup(), null);
+const newest = () => draftText(backup().raw);
 
 /* ------------------------------------------------------------------ *
- * 2. a brand-new session inherits the unsent draft                    *
+ * 1. one draft, shared by every composer                              *
  * ------------------------------------------------------------------ */
 
-console.log('\nrestoring into a new session');
-storage.setItem(key('session-A'), stateWith('要发给模型的半句话'));
-storage.setItem('dsh.conversation-view.state', 'untouched');
+console.log('\none newest draft');
+storage.setItem(key('s1'), stateWith('第一段'));
+check('a typed draft becomes the newest draft', newest(), '第一段');
+check('and remembers the composer it lives in', backup().key, key('s1'));
 
-const restored = storage.getItem(key('session-B'));
-check('a new session reads the backup instead of nothing', restored, stateWith('要发给模型的半句话'));
-ok('a non-draft key is untouched', storage.getItem('dsh.conversation-view.state') === 'untouched');
+storage.setItem(key('s2'), stateWith('第二段'));
+check('a later draft replaces it', newest(), '第二段');
 
-const own = storage.getItem(key('session-A'));
-check('the owning session still reads its own draft', own, stateWith('要发给模型的半句话'));
+console.log('\nevery composer shows the newest draft');
+check('a session with no draft of its own is handed it', readText(storage.getItem(key('s3'))), '第二段');
+/* A composer still holding an older draft from an earlier page load: written
+ * behind the guard, because writing through it would itself be an edit. */
+writeBehindTheGuard.call(storage, key('s4'), stateWith('很久以前写的'));
+check('a session holding an older draft is handed it too', readText(storage.getItem(key('s4'))), '第二段');
 
 /* ------------------------------------------------------------------ *
- * 3. once the new session is used, the backup follows it              *
+ * 2. an edit anywhere reaches everywhere                              *
  * ------------------------------------------------------------------ */
 
-console.log('\nconsuming the backup');
-storage.setItem(key('session-B'), stateWith('要发给模型的半句话'));
-check('the backup now belongs to the session that received it', backup().key, key('session-B'));
+console.log('\nedits reach every composer');
+storage.setItem(key('s5'), stateWith('第二段又长了一点'));
+check('the edit is the newest draft', newest(), '第二段又长了一点');
+check('an older session follows it', readText(storage.getItem(key('s4'))), '第二段又长了一点');
 
-storage.setItem(key('session-B'), JSON.stringify({ draft: { text: '', references: [] }, view: null, viewRequest: null }));
-check('sending or clearing it drops the backup', backup(), null);
-check('and nothing is injected afterwards', storage.getItem(key('session-C')), null);
+storage.setItem(key('s6'), stateWith('变短了'));
+check('a shorter draft follows just as well', readText(storage.getItem(key('s4'))), '变短了');
 
 /* ------------------------------------------------------------------ *
- * 4. rehydration must not clobber a newer backup (the reported bug)    *
+ * 3. the reported walk-through, step by step                          *
  * ------------------------------------------------------------------ */
 
-console.log('\nrehydration vs a real edit');
+console.log('\nthe reported walk-through');
 storage.clear();
 
-/* Type into a brand-new session, then leave it. */
-storage.setItem(key('session-A'), stateWith('测试会话框'));
-check(
-  'the first draft becomes the backup',
-  JSON.parse(backup().raw).draft.text,
-  '测试会话框',
-);
+/* Step 1: type into a brand-new session. */
+storage.setItem(key('w-new1'), stateWith('测试会话'));
+check('step 1: the new session holds the draft', newest(), '测试会话');
 
-/* Open an older session: it has no draft of its own, so it is handed the
- * backup — and its store writes that very value straight back. */
-const handedToB = storage.getItem(key('session-B'));
-check('an older session is handed the backup', handedToB, stateWith('测试会话框'));
-storage.setItem(key('session-B'), handedToB);
-check(
-  'rehydration alone leaves the backup text alone',
-  JSON.parse(backup().raw).draft.text,
-  '测试会话框',
-);
-check('and the backup now belongs to the session holding it', backup().key, key('session-B'));
+/* Step 2: open an older session; it shows the draft. */
+const stepA = storage.getItem(key('w-A'));
+check('step 2: an older session shows the draft', readText(stepA), '测试会话');
+storage.setItem(key('w-A'), stepA);
 
-/* Keep typing in another new session. */
-const handedToC = storage.getItem(key('session-C'));
-storage.setItem(key('session-C'), stateWith('测试会话框测试新会话框第一次'));
-check(
-  'the extended draft takes over the backup',
-  JSON.parse(backup().raw).draft.text,
-  '测试会话框测试新会话框第一次',
-);
+/* Step 3: extend it inside that older session. */
+storage.setItem(key('w-A'), stateWith('测试会话测试会话第一次'));
+check('step 3: the extension is the newest draft', newest(), '测试会话测试会话第一次');
 
-/* Open the older session AGAIN. It borrowed its draft, so it now follows the
- * newest text — and the store writes that text straight back, unchanged. */
-const rehydratedB = storage.getItem(key('session-B'));
-check(
-  'the borrowed older session follows the newest draft',
-  JSON.parse(rehydratedB).draft.text,
-  '测试会话框测试新会话框第一次',
-);
-storage.setItem(key('session-B'), rehydratedB);
-check(
-  'writing the borrowed draft back does NOT overwrite the newer one',
-  JSON.parse(backup().raw).draft.text,
-  '测试会话框测试新会话框第一次',
-);
+/* Step 4: a new session shows the extension. */
+check('step 4: a new session shows the extension', readText(storage.getItem(key('w-new2'))), '测试会话测试会话第一次');
 
-/* The next new session must inherit the newest draft. */
-const handedToD = storage.getItem(key('session-D'));
-check(
-  'a later new session inherits the NEWEST draft',
-  JSON.parse(handedToD).draft.text,
-  '测试会话框测试新会话框第一次',
-);
+/* Step 5: another older session shows it too. */
+check('step 5: another older session shows it too', readText(storage.getItem(key('w-B'))), '测试会话测试会话第一次');
+
+/* Step 6: back to the first older session — still the extension. */
+check('step 6: the first older session still shows the extension', readText(storage.getItem(key('w-A'))), '测试会话测试会话第一次');
+
+/* One more round on top of the extension. */
+const stepB = storage.getItem(key('w-B'));
+storage.setItem(key('w-B'), stepB);
+storage.setItem(key('w-B'), stateWith('测试会话测试会话第一次测试会话第二次'));
+check('a second extension is the newest draft', newest(), '测试会话测试会话第一次测试会话第二次');
+check('the first older session follows again', readText(storage.getItem(key('w-A'))), '测试会话测试会话第一次测试会话第二次');
+check('and so does every new session', readText(storage.getItem(key('w-new3'))), '测试会话测试会话第一次测试会话第二次');
 
 /* ------------------------------------------------------------------ *
- * 5. a borrowed draft follows every later edit (the second report)     *
+ * 4. rehydration is not an edit                                       *
  * ------------------------------------------------------------------ */
 
-console.log('\nborrowed drafts follow the newest text');
+console.log('\nrehydration');
 storage.clear();
+storage.setItem(key('r1'), stateWith('第一版'));
+const handed = storage.getItem(key('r2'));
+check('a composer is handed the newest draft', readText(handed), '第一版');
 
-/* Type in a new session, then look at an older one: it borrows the draft. */
-storage.setItem(key('league-A'), stateWith('测试会话'));
-const borrowedB = storage.getItem(key('league-B'));
-check('the older session borrows the draft', JSON.parse(borrowedB).draft.text, '测试会话');
-storage.setItem(key('league-B'), borrowedB);
+/* The store writes the value it was just handed straight back. */
+storage.setItem(key('r2'), handed);
+check('writing it back is not treated as an edit', backup().key, key('r1'));
+check('and the text is unchanged', newest(), '第一版');
 
-/* A new session shows it, and the user extends it there. */
-const newC = storage.getItem(key('league-C'));
-storage.setItem(key('league-C'), newC);
-storage.setItem(key('league-C'), stateWith('测试会话测试会话第一次'));
-check(
-  'the extension becomes the newest draft',
-  JSON.parse(backup().raw).draft.text,
-  '测试会话测试会话第一次',
-);
-
-/* Looking at the older session again must show the extension, not the copy it
- * borrowed the first time. */
-const secondLookB = storage.getItem(key('league-B'));
-check(
-  'the older session now shows the extension',
-  JSON.parse(secondLookB).draft.text,
-  '测试会话测试会话第一次',
-);
-storage.setItem(key('league-B'), secondLookB);
-
-/* One more round: another new session extends it again. */
-const newD = storage.getItem(key('league-D'));
-storage.setItem(key('league-D'), newD);
-storage.setItem(key('league-D'), stateWith('测试会话测试会话第一次测试会话第二次'));
-const thirdLookB = storage.getItem(key('league-B'));
-check(
-  'and it still follows after a second extension',
-  JSON.parse(thirdLookB).draft.text,
-  '测试会话测试会话第一次测试会话第二次',
-);
+storage.setItem(key('r3'), stateWith('第二版'));
+check('a later edit becomes the newest draft', newest(), '第二版');
+check('and the earlier composer follows it', readText(storage.getItem(key('r2'))), '第二版');
 
 /* ------------------------------------------------------------------ *
- * 6. a draft left behind by an earlier plugin version is adopted       *
+ * 5. clearing stays inside the composer it was clicked in             *
  * ------------------------------------------------------------------ */
 
-console.log('\nlegacy borrows from an earlier version');
+console.log('\nclearing stays local');
 storage.clear();
+storage.setItem(key('c-A'), stateWith('A 自己的内容'));
+storage.setItem(key('c-B'), stateWith('最新的内容'));
+check('the newest draft is the second one', newest(), '最新的内容');
 
-/* An earlier run handed this session a draft and stored it there, without
- * recording that it was only a loan. */
-writeBehindTheGuard.call(storage, key('legacy-B'), stateWith('测试会话'));
-/* The backup carried that version too, then moved on in a new session. */
-storage.setItem(key('legacy-A'), stateWith('测试会话'));
-storage.setItem(key('legacy-X'), stateWith('测试会话第二次'));
-check('the newest version is the backup', JSON.parse(backup().raw).draft.text, '测试会话第二次');
-check('the earlier version is remembered', backup().history.includes('测试会话'), true);
+/* The user clears A, which is not where the newest draft lives. */
+storage.setItem(key('c-A'), emptyState);
+check('clearing drops the shared draft', backup(), null);
+check('the other composer keeps its text', readText(storage.getItem(key('c-B'))), '最新的内容');
+check('an empty composer stays empty', storage.getItem(key('c-C')), null);
 
-/* The legacy session must now follow the newest text. */
-check(
-  'a legacy handed-out draft follows the newest text',
-  JSON.parse(storage.getItem(key('legacy-B'))).draft.text,
-  '测试会话第二次',
-);
+/* Typing again starts a fresh shared draft. */
+storage.setItem(key('c-D'), stateWith('清空后重新写的'));
+check('typing again starts a new shared draft', newest(), '清空后重新写的');
 
-/* Text the user typed is on record as that session's own, so it is never
- * adopted. */
-storage.setItem(key('legacy-C'), stateWith('我自己写的'));
-storage.setItem(key('legacy-D'), stateWith('别处又改了'));
-check(
-  'a session the user typed into is never replaced',
-  JSON.parse(storage.getItem(key('legacy-C'))).draft.text,
-  '我自己写的',
-);
+/* Clearing the composer that owns the newest draft drops it the same way, and
+ * still does not touch anyone else. */
+storage.setItem(key('c-D'), emptyState);
+check('clearing the newest draft drops it too', backup(), null);
+check('and the untouched composer still holds its own text', readText(storage.getItem(key('c-B'))), '最新的内容');
 
 /* ------------------------------------------------------------------ *
- * 7. a draft the user typed in a session stays that session's own      *
- * ------------------------------------------------------------------ */
-
-console.log('\nprotected own drafts');
-storage.clear();
-storage.setItem(key('mine-X'), stateWith('我自己写的草稿'));
-check(
-  'a session keeps the draft typed in it',
-  JSON.parse(storage.getItem(key('mine-X'))).draft.text,
-  '我自己写的草稿',
-);
-/* Another session's edit updates the backup... */
-storage.setItem(key('mine-Y'), stateWith('别处更新的内容'));
-/* ...and must never reach into a session that owns the text it holds. */
-check(
-  'another session never overwrites it',
-  JSON.parse(storage.getItem(key('mine-X'))).draft.text,
-  '我自己写的草稿',
-);
-
-/* ------------------------------------------------------------------ *
- * 8. legacy string drafts, and empty writes                           *
+ * 6. edge cases                                                       *
  * ------------------------------------------------------------------ */
 
 console.log('\nedge cases');
-storage.setItem(key('session-D'), JSON.stringify({ draft: '字符串形态的草稿', view: null, viewRequest: null }));
-ok('a plain-string draft is mirrored too', backup() !== null && backup().chars === 8);
+storage.clear();
+storage.setItem(key('e-plain'), JSON.stringify({ draft: '字符串形态的草稿', view: null, viewRequest: null }));
+check('a plain-string draft is mirrored', newest(), '字符串形态的草稿');
 
-storage.setItem(key('session-E'), JSON.stringify({ draft: { text: '   ', references: [] }, view: null, viewRequest: null }));
-check('a whitespace-only draft from another session does not spend the backup', backup().key, key('session-D'));
+storage.setItem(key('e-blank'), JSON.stringify({ draft: { text: '   ', references: [] }, view: null, viewRequest: null }));
+check('a whitespace-only draft is not an edit', newest(), '字符串形态的草稿');
 
-storage.setItem(key('session-F'), JSON.stringify({ draft: { text: '  ', references: [] } }));
-check('a whitespace-only draft never becomes a backup of its own', backup().key, key('session-D'));
+storage.setItem(key('e-garbage'), 'not json at all');
+check('garbage written to a draft key is ignored', newest(), '字符串形态的草稿');
+check('garbage read from a draft key yields the newest draft', readText(storage.getItem(key('e-garbage'))), '字符串形态的草稿');
 
-check('garbage in a draft key is tolerated', storage.getItem(key('session-G')), backup().raw);
-storage.setItem(key('session-G'), 'not json at all');
-check('garbage written to a draft key is ignored', backup().key, key('session-D'));
+/* A copy left behind by an earlier page load must not resurrect itself. */
+writeBehindTheGuard.call(storage, key('e-old'), stateWith('很旧的遗留'));
+check('an old copy left on disk reads as the newest draft', readText(storage.getItem(key('e-old'))), '字符串形态的草稿');
+
+/* A draft key with a non-draft object is read through untouched. */
+storage.setItem(key('e-other'), JSON.stringify({ view: 'trajectory' }));
+check('a key without a draft never becomes the newest draft', newest(), '字符串形态的草稿');
 
 /* ------------------------------------------------------------------ *
- * 9. disposal restores the original storage methods                   *
+ * 7. disposal restores the original storage methods                   *
  * ------------------------------------------------------------------ */
 
 console.log('\ndisposal');
-storage.setItem(BACKUP, JSON.stringify({ v: 1, at: 1, key: key('session-H'), raw: stateWith('残留'), chars: 2, preview: '残留' }));
+storage.setItem(BACKUP, JSON.stringify({ v: 1, at: 1, key: key('d1'), raw: stateWith('残留'), chars: 2, preview: '残留' }));
 const proto = Object.getPrototypeOf(storage);
 const patchedGet = proto.getItem;
 disposers.forEach((dispose) => dispose());
 ok('the patched reader is gone', proto.getItem !== patchedGet);
-check('after disposal a new session reads nothing again', storage.getItem(key('session-I')), null);
+check('after disposal a new session reads nothing again', storage.getItem(key('d2')), null);
 
 /* ------------------------------------------------------------------ */
 
